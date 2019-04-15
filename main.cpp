@@ -139,9 +139,9 @@ int LinemodDetector::detection(){
     std::vector<cv::linemod::Match> matches;
 
     detector_->getTemplates("object1", 1);
-    std::cout << "matches num was " << detector_ << std::endl;
-
     detector_->match(sources, 93.0f, matches);
+
+    std::cout << "matches num was " << detector_ << std::endl;
 
     //将深度图转换为点云
     cv::Mat_<cv::Vec3f> depth_real_ref_raw;

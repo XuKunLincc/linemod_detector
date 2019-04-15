@@ -98,7 +98,15 @@ private:
      */
     void loadDetctor(const std::string file_name, cv::linemod::Detector *value);
 
-    void loadVectorMat(std::string &fileName, std::vector<cv::Mat> &out, int row, int cols);
+    /**
+     * @brief   从文本文件中加载vector<Mat>
+     * @param[in]   fileName:文本文件名称
+     * @param[out]  out:将文本中的内容加载至out中
+     * @param[in]   rows:Mat的行数
+     * @param[in]   cols:Mat的列数
+     * @return  void
+     */
+    void loadVectorMat(std::string &fileName, std::vector<cv::Mat> &out, int rows, int cols);
 
     /**
      * @brief       icp处理，将参考点云和目标点云进行配准 pts_ref = pts_model * R + T
@@ -192,7 +200,6 @@ private:
 
     // 保存识别成功后的位姿，由于可能在一张图片识别到多个一样的物体，所以采用vector
     std::vector<pose> poses;
-
 
 };
 
