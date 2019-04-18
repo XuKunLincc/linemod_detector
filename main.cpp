@@ -1,5 +1,7 @@
 #include "linemod_detector.h"
 
+#include <eigen3/Eigen/Dense>
+#include <opencv2/core/eigen.hpp>
 #include <iostream>
 #include <boost/format.hpp>
 #include <boost/tokenizer.hpp>
@@ -7,19 +9,20 @@
 #include <boost/foreach.hpp>
 #include <fstream>
 
+#include <opencv2/highgui/highgui.hpp>
+
+#define DEBUG
+#include <hirop_debug.h>
 
 HVISION_MODULE(LinemodDetector)
 
 LinemodDetector::LinemodDetector():CBaseDetector("LinemodDetector"){
     icp_dist_min_ = 0.06f;
     px_match_min_ = 0.25;
-    renderer_iterator_ = NULL;
+    initParam();
 }
 
 LinemodDetector::~LinemodDetector(){
-
-    if(renderer_iterator_)
-        delete renderer_iterator_;
 
 }
 
@@ -29,18 +32,29 @@ void LinemodDetector::initParam(){
     param_radius_min_ = 0.6;
     param_radius_max_ = 1.1;
     param_radius_step_ = 0.4;
-    param_width_ = 640;
-    param_height_ = 480;
+    param_width_ = 960;
+    param_height_ = 540;
     param_focal_length_x_ = 525.0;
     param_focal_length_y_ = 525.0;
     param_near_ = 0.1;
     param_far_ = 1000;
     th_obj_dist_ = 0.04f;
-    verbose_ =false;
+    verbose_ = true;
 
+
+    static const int T_LVLS[] = {4, 15};
+    std::vector< cv::Ptr<cv::linemod::Modality> > modalities;
+    modalities.push_back(new cv::linemod::ColorGradient());
+    modalities.push_back(new cv::linemod::DepthNormal());
+    detector_ = new cv::linemod::Detector(modalities, std::vector<int>(T_LVLS, T_LVLS +2));
 }
 
 int LinemodDetector::loadData(const std::string path, const std::string objectName){
+
+    if(Rs_.count(objectName)){
+        IDebug("The %s object data alreadly loaded", objectName.c_str());
+        return 0;
+    }
 
     meshPath = path + "/mesh.stl";
     std::string RsFileName= path + "/RS.txt";
@@ -52,31 +66,48 @@ int LinemodDetector::loadData(const std::string path, const std::string objectNa
     renderer_->set_parameters(param_width_, param_height_,\
                               param_focal_length_x_, param_focal_length_y_, param_near_, param_far_);
 
+    RendererIterator *renderer_iterator_;
     renderer_iterator_ = new RendererIterator(renderer_, param_n_points_);
     renderer_iterator_->angle_step_ = param_angle_step_;
     renderer_iterator_->radius_min_ = float(param_radius_min_);
     renderer_iterator_->radius_max_ = float(param_radius_max_);
     renderer_iterator_->radius_step_ = float(param_radius_step_);
+    renderer_iterator_s.insert(std::pair<std::string, RendererIterator*>(objectName, renderer_iterator_));
 
     // 加载平移选择矩阵表
-    loadVectorMat(RsFileName, Rs_, 3, 3);
-    loadVectorMat(TsFileName, Ts_, 1, 3);
-    loadVectorMat(KsFileName, Ks_, 3, 3);
+    std::vector<cv::Mat> Rs_tmp, Ts_tmp, Ks_tmp;
+    loadVectorMat(RsFileName, Rs_tmp, 3, 3);
+    loadVectorMat(TsFileName, Ts_tmp, 1, 3);
+    loadVectorMat(KsFileName, Ks_tmp, 3, 3);
+
+    Rs_.insert(std::pair<std::string, std::vector<cv::Mat>>(objectName, Rs_tmp));
+    Ts_.insert(std::pair<std::string, std::vector<cv::Mat>>(objectName, Ts_tmp));
+    Ks_.insert(std::pair<std::string, std::vector<cv::Mat>>(objectName, Ks_tmp));
 
     // 加载距离表
+    std::vector<float> distances_tmp;
     std::ifstream distancesIf(DistancesFileName);
     std::string disTmp;
     size_t disIndex = 0;
     while(distancesIf >> disTmp){
-        distances_.push_back(std::stof(disTmp));
+        distances_tmp.push_back(std::stof(disTmp));
         disIndex ++;
     }
+
+    distances_.insert(std::pair<std::string, std::vector<float> >(objectName, distances_tmp));
 
     /**
     *   加载Detector
     */
-    detector_ = new cv::linemod::Detector();
-    loadDetctor(path + "/detector.xml", detector_);
+    cv::linemod::Detector *detector = new cv::linemod::Detector();
+    loadDetctor(path + "/detector.xml", detector);
+
+    std::string object_id_in_db = detector->classIds()[0];
+    for (size_t template_id = 0; template_id < detector->numTemplates();
+         ++template_id) {
+        const std::vector<cv::linemod::Template> &templates_original = detector->getTemplates(object_id_in_db, template_id);
+        detector_->addSyntheticTemplate(templates_original, objectName);
+    }
 
     if(detector_->classIds().empty())
         return -1;
@@ -122,6 +153,10 @@ void LinemodDetector::loadDetctor(const std::string file_name, cv::linemod::Dete
 }
 
 int LinemodDetector::detection(){
+
+    objs_.clear();
+    poses.clear();
+
     // 构建检测输入源
     std::vector<cv::Mat> sources;
 
@@ -130,7 +165,14 @@ int LinemodDetector::detection(){
     if (depth_.depth() == CV_32F)
         depth_.convertTo(depth, CV_16UC1, 1000.0);
 
+    cv::Mat color;
+    if (color_.rows > 960)
+        cv::pyrDown(color_.rowRange(0, 960), color);
+    else
+        color_.copyTo(color);
+
     // 将深度图作为检测源
+    sources.push_back(color);
     sources.push_back(depth);
 
     /**
@@ -138,15 +180,15 @@ int LinemodDetector::detection(){
      */
     std::vector<cv::linemod::Match> matches;
 
-    detector_->getTemplates("object1", 1);
     detector_->match(sources, 93.0f, matches);
-
-    std::cout << "matches num was " << detector_ << std::endl;
 
     //将深度图转换为点云
     cv::Mat_<cv::Vec3f> depth_real_ref_raw;
-    cv::Mat_<float> K;
-    //K_depth_->convertTo(K, CV_32F);
+    cv::Mat_<float> K, K_depth_;
+    cv::Mat_<double> tmpMat_(3,3);
+    tmpMat_ << 527.6911 , 0, 478.74231, 0, 528.01282, 266.14407, 0, 0, 1;
+    K_depth_ = tmpMat_;
+    K_depth_.convertTo(K, CV_32F);
     cv::depthTo3d(depth, K, depth_real_ref_raw);
 
     /**
@@ -154,19 +196,15 @@ int LinemodDetector::detection(){
      */
     BOOST_FOREACH(const cv::linemod::Match & match, matches){
 
-        // 根据匹配成功的类别[class_id]和模板ID[template_id],来获取具体的模板
-        const std::vector<cv::linemod::Template>& templates =
-                detector_->getTemplates(match.class_id, match.template_id);
-
         /**
          * 填充位姿，训练过程中，一个物体代表一个claas_id，因此在识别过程中detctor_只能识别一个物体
          * 而在识别过程中的，每渲染一张图片，代表的是一个template_id，因此，我们通过识别匹配中得到的template_id来对应训练过程中
          * 对应的渲染图片，由于渲染过程中，每个图片[template_id]的位姿都是已知的，所以我们就可以获取到当前匹配的位姿态
          */
-        cv::Matx33d R_match = Rs_[match.template_id].clone();
-        cv::Vec3d T_match = Ts_[match.template_id].clone();
-        float D_match = distances_[match.template_id];
-        cv::Mat K_match = Ks_[match.template_id];
+        cv::Matx33d R_match = Rs_.at(match.class_id)[match.template_id].clone();
+        cv::Vec3d T_match = Ts_.at(match.class_id)[match.template_id].clone();
+        float D_match = distances_.at(match.class_id)[match.template_id];
+        cv::Mat K_match = Ks_.at(match.class_id)[match.template_id];
 
         /**
          * 将通过模板匹配得到的粗略位姿 放到渲染器进行重新渲染，得到深度图，然后将得到的深度图转换为点云
@@ -176,13 +214,16 @@ int LinemodDetector::detection(){
         cv::Matx33d R_temp(R_match.inv());
         cv::Vec3d up(-R_temp(0,1), -R_temp(1,1), -R_temp(2,1));
         cv::Mat depth_ref_;
-        renderer_iterator_->renderDepthOnly(depth_ref_, mask, rect, -T_match, up);
+
+        renderer_iterator_s.at(match.class_id)->renderDepthOnly(depth_ref_, mask, rect, -T_match, up);
 
         /**
          * @brief depth_real_model_raw  保存通过渲染器得到的深度图转换的点云
          */
         cv::Mat_<cv::Vec3f> depth_real_model_raw;
-        cv::depthTo3d(depth_ref_, K_match, depth_real_model_raw);
+        cv::Mat renderK;
+        K_match.convertTo(renderK, CV_32F);
+        cv::depthTo3d(depth_ref_, renderK, depth_real_model_raw);
 
         /**
          * 生成点云和模型的包围矩形，<包围整个深度图>？
@@ -289,7 +330,7 @@ int LinemodDetector::detection(){
             float icp_dist = icpCloudToCloud(o_match->pts_ref, o_match->pts_model, o_match->r, o_match->t, icp_px_match, 0);
 
             if (verbose_)
-                std::cout << o_match->match_class << " " << o_match->match_sim << " icp " << icp_dist << ", ";
+                std::cout << o_match->match_class <<  o_match->match_class << o_match->match_sim << " icp " << icp_dist << ", ";
 
             //icp_dist in the same units as the sensor data
             //this distance is used to compute the ratio of inliers (points laying within this distance between the point clouds)
@@ -298,25 +339,64 @@ int LinemodDetector::detection(){
             if (verbose_)
                 std::cout << " ratio " << o_match->icp_px_match << " or " << px_inliers_ratio << std::endl;
 
+            pose p;
+            p.objectName = o_match->match_class;
+            RT2Pose(o_match->r, o_match->t, p);
+            this->poses.push_back(p);
+
             ++count_pass;
         }
-    if (verbose_ && (matches.size()>0))
+    if (verbose_ && (matches.size()>0)){
         std::cout << "matches  " << objs_.size() << " / " << count_pass << " / " << matches.size() << std::endl;
+        return 0;
+    }
+
+    IDebug("%s", "nothing detection");
+    return -1;
+
+}
+
+void LinemodDetector::RT2Pose(const cv::Matx33f &R, const cv::Vec3f &T, pose &pose){
+
+    Eigen::Matrix3d t_R;
+    cv::cv2eigen((cv::Matx33d)R, t_R);
+    Eigen::Quaterniond q(t_R);
+    Eigen::Vector4d q_tmp = q.coeffs();
+
+    pose.quaternion.x = q_tmp[0];
+    pose.quaternion.y = q_tmp[1];
+    pose.quaternion.z = q_tmp[2];
+    pose.quaternion.w = q_tmp[3];
+
+    pose.position.x = T(0);
+    pose.position.y = T(1);
+    pose.position.z = T(2);
+
+}
+
+int LinemodDetector::getResult(std::vector<pose> &poses){
+    poses = this->poses;
+
+    if(poses.empty())
+        return -1;
+
+    IDebug("x = %lf, y = %lf, z = %lf, qx = %lf, qy = %lf, qz = %lf, qw = %lf", \
+           this->poses[0].position.x, this->poses[0].position.y, this->poses[0].position.z,\
+            this->poses[0].quaternion.x, this->poses[0].quaternion.y, this->poses[0].quaternion.z, this->poses[0].quaternion.w);
 
     return 0;
-
 }
 
-int LinemodDetector::getResult(pose &p){
-
-
-
-}
-
-void LinemodDetector::setImg(const cv::Mat &inputImg){
+void LinemodDetector::setDepthImg(const cv::Mat &inputImg){
     // 保存输入的图像
     depth_ = inputImg;
 }
+
+void LinemodDetector::setColorImg(const cv::Mat &inputImg){
+    // 保存输入的图像
+    color_ = inputImg;
+}
+
 
 float LinemodDetector::icpCloudToCloud(const std::vector<cv::Vec3f> &pts_ref,\
                                        std::vector<cv::Vec3f> &pts_model, \

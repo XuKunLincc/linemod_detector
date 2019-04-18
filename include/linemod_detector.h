@@ -74,17 +74,24 @@ public:
 
     /**
      * @brief   获取识别的结果
-     * @param   [p] 输出， 保存识别的结果
+     * @param[out] poses， 保存识别的结果
      * @return  0 成功 -1 失败
      */
-    int getResult(pose &p);
+    int getResult(std::vector<pose> &poses);
 
     /**
      * @brief   向检测器传递图像数据
      * @param   [inputImg] 输入，传递的图像
      * @return  void
      */
-    void setImg(const cv::Mat &inputImg);
+    void setDepthImg(const cv::Mat &inputImg);
+
+    /**
+     * @brief   向检测器传递图像数据
+     * @param   [inputImg] 输入，传递的图像
+     * @return  void
+     */
+    void setColorImg(const cv::Mat &inputImg);
 
 private:
 
@@ -158,6 +165,8 @@ private:
                    const cv::Mat_<cv::Vec3f> &src_mod, std::vector<cv::Vec3f>& pts_ref, \
                    std::vector<cv::Vec3f>& pts_mod);
 
+    void RT2Pose(const cv::Matx33f &R, const cv::Vec3f &T, pose &pose);
+
 private:
 
     /**
@@ -179,19 +188,19 @@ private:
 
     std::string meshPath;
 
-
-    RendererIterator *renderer_iterator_;
-
     // opencv linemod对象指针
     cv::linemod::Detector *detector_;
 
     // 保存输入的图像数据
     cv::Mat depth_;
+    cv::Mat color_;
 
-    std::vector<cv::Mat> Rs_;
-    std::vector<cv::Mat> Ts_;
-    std::vector<cv::Mat> Ks_;
-    std::vector<float> distances_;
+    std::map <std::string, std::vector<cv::Mat> > Rs_;
+    std::map <std::string, std::vector<cv::Mat> > Ts_;
+    std::map <std::string, std::vector<cv::Mat> > Ks_;
+    std::map <std::string, std::vector<float> > distances_;
+
+    std::map <std::string, RendererIterator*> renderer_iterator_s;
 
     float icp_dist_min_;
     float px_match_min_;
