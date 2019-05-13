@@ -13,6 +13,8 @@
 #include "object_recognition_renderer/renderer3d.h"
 #include <object_recognition_renderer/utils.h>
 
+#include "hpluginloader.h"
+
 using namespace hirop_vision;
 
 class LinemodDetector:public CBaseDetector{
@@ -211,5 +213,7 @@ private:
     std::vector<pose> poses;
 
 };
+
+H_DECLARE_PLUGIN(IDetector)
 
 #endif

@@ -14,9 +14,7 @@
 #define DEBUG
 #include <hirop_debug.h>
 
-HVISION_MODULE(LinemodDetector)
-
-LinemodDetector::LinemodDetector():CBaseDetector("LinemodDetector"){
+LinemodDetector::LinemodDetector():CBaseDetector("LinemodDetector", false){
     icp_dist_min_ = 0.06f;
     px_match_min_ = 0.25;
     initParam();
@@ -50,6 +48,8 @@ void LinemodDetector::initParam(){
 }
 
 int LinemodDetector::loadData(const std::string path, const std::string objectName){
+
+    IDebug("%s", "LinemodDetector loading data");
 
     if(Rs_.count(objectName)){
         IDebug("The %s object data alreadly loaded", objectName.c_str());
@@ -586,3 +586,6 @@ float LinemodDetector::matToVec(const cv::Mat_<cv::Vec3f> &src_ref, const cv::Ma
         ratio = static_cast<float>(px_missing) /static_cast<float>(pts_ref.size());
     return ratio;
 }
+
+
+H_EXPORT_PLUGIN(LinemodDetector, "LinemodDetector", "1.0")
